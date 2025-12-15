@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Couple Checklist — Live</title>
+  <style>
+    :root{--blue:#1976d2;--pink:#e91e63;--muted:#777}
+    body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:#111;margin:0;padding:20px;background:#f7f8fb}
+    .container{max-width:900px;margin:0 auto;background:#fff;padding:18px;border-radius:12px;box-shadow:0 6px 24px rgba(12,20,40,0.06)}
+    header{display:flex;align-items:center;justify-content:space-between}
+    h1{font-size:20px;margin:0}
+    .small{font-size:13px;color:var(--muted)}
+    .row{display:flex;gap:12px;align-items:center}
+    .cols{display:grid;grid-template-columns:1fr 120px 120px;gap:12px;margin-top:18px}
+    .task{padding:12px;border-radius:8px;border:1px solid #eef2f7;background:#fff;display:flex;align-items:center;gap:10px}
+    .task label{flex:1}
+    .user-col{display:flex;flex-direction:column;gap:8px}
+    .user-header{text-align:center;font-weight:600}
+    .streak{font-size:12px;color:var(--muted)}
+    .checkbox{width:20px;height:20px;border-radius:4px;border:1px solid #d6dbe6;display:inline-block;position:relative}
+    .checkbox.checked::after{content:'✓';position:absolute;left:3px;top:-3px;font-size:18px;color:white}
+    .blue{background:var(--blue)}
+    .pink{background:var(--pink)}
+    .controls{display:flex;gap:8px;align-items:center}
+    .btn{padding:8px 10px;border-radius:8px;border:0;background:#111;color:#fff;cursor:pointer}
+    .toast{position:fixed;right:18px;bottom:18px;background:#111;color:#fff;padding:12px;border-radius:10px;opacity:0.95}
+    .messages{margin-top:16px;display:flex;gap:6px}
+    .msg-btn{padding:8px 10px;border-radius:8px;border:1px solid #e6e9ef;background:#fff;cursor:pointer}
+    .signin{display:flex;gap:8px;align-items:center}
+    input[type="text"], input[type="password"]{padding:8px;border-radius:8px;border:1px solid #d6dbe6}
+    footer{margin-top:12px;font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Daily Couple Checklist</h1>
+        <div class="small">Live sync, resets by date (Toronto local time)</div>
+      </div>
+      <div id="authArea"></div>
+    </header>
+
+    <div id="app" style="display:none">
+      <div class="row" style="justify-content:space-between">
+        <div class="small" id="todayDisplay"></div>
+        <div class="controls">
+          <div class="small">Couple code: <span id="coupleCodeLbl"></span></div>
+        </div>
+      </div>
+
+      <div class="cols" id="listGrid">
+        <div><strong>Task</strong></div>
+        <div style="text-align:center"><strong id="userAName">User A</strong><div class="streak" id="streakA">—</div></div>
+        <div style="text-align:center"><strong id="userBName">User B</strong><div class="streak" id="streakB">—</div></div>
+      </div>
+
+      <div style="margin-top:12px">
+        <div class="messages"><button class="msg-btn" data-msg="Don't forget water">Don't forget water</button><button class="msg-btn" data-msg="Nice workout">Nice workout</button><button class="msg-btn" data-msg="Make sure to eat, my love">Make sure to eat, my love</button></div>
+      </div>
+
+      <footer>
+        Tip: both devices must open the page to sync and to receive in-app notifications. Allow browser notifications if you want system popups.
+      </footer>
+    </div>
+  </div>
+
+  <!-- Firebase (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+  <script>
+    /*************************
+     *  CONFIGURE ME (required)
+     *************************/
+    // Create a Firebase project and Realtime Database. Put your config here.
+    const firebaseConfig = {
+      apiKey: "AIzaSyBvtEO0aWogxzoNNDCbK4ih_KkLRu926iY",
+      authDomain: "couple-checklist.firebaseapp.com",
+      databaseURL: "https://couple-checklist.firebaseio.com",
+      projectId: "couple-checklist",
+      storageBucket: "couple-checklist.firebasestorage.app",
+      messagingSenderId: "684989519224",
+      appId: "1:684989519224:web:41298678e23d83d1ce648d"
+    };
+
+    // Couple ID: you can hardcode a short string for your pair, e.g. "john-and-anna".
+    // We'll let users enter it at sign-in.
+
+    /*************************/
+
+    // Tasks (edit as you like)
+    const TASKS = [
+      'Finished 1 bottle of water',
+      'Finished 2 bottles of water',
+      'Finished 3 bottles of water',
+      'Completed cardio workout',
+      'Completed strength workout',
+      'Eaten breakfast',
+      'Eaten lunch',
+      'Eaten dinner',
+      'Hit protein goal',
+      'Hit calorie goal',
+      'Taken vitamin pill',
+      'Taken creatine'
+    ];
+
+    // Helpers
+    function todayKey() {
+      // Toronto time — use Intl with America/Toronto
+      const now = new Date();
+      const toronto = new Intl.DateTimeFormat('en-CA', {timeZone: 'America/Toronto', year:'numeric', month:'2-digit', day:'2-digit'}).formatToParts(now);
+      // parts give year, month, day
+      const parts = {};
+      toronto.forEach(p=>parts[p.type]=p.value);
+      return `${parts.year}-${parts.month}-${parts.day}`; // YYYY-MM-DD
+    }
+
+    // init firebase
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.database();
+
+    // UI refs
+    const authArea = document.getElementById('authArea');
+    const app = document.getElementById('app');
+    const listGrid = document.getElementById('listGrid');
+    const todayDisplay = document.getElementById('todayDisplay');
+    const coupleCodeLbl = document.getElementById('coupleCodeLbl');
+    const userAName = document.getElementById('userAName');
+    const userBName = document.getElementById('userBName');
+    const streakA = document.getElementById('streakA');
+    const streakB = document.getElementById('streakB');
+
+    let localUser = null; // {uid, name, color}
+    let coupleId = null;
+    let otherUserId = null; // uid of partner (best-effort)
+
+    function showSignIn() {
+      authArea.innerHTML = '';
+      const container = document.createElement('div');
+      container.className = 'signin';
+      container.innerHTML = `
+        <input id="inpName" placeholder="Your name" />
+        <input id="inpCouple" placeholder="Couple code (both use same)" />
+        <select id="inpColor"><option value="blue">Blue</option><option value="pink">Pink</option></select>
+        <button id="btnJoin" class="btn">Join</button>
+      `;
+      authArea.appendChild(container);
+      document.getElementById('btnJoin').onclick = async ()=>{
+        const name = document.getElementById('inpName').value.trim();
+        const code = document.getElementById('inpCouple').value.trim();
+        const color = document.getElementById('inpColor').value;
+        if(!name||!code){alert('Enter name and couple code');return}
+        coupleId = code;
+        try{
+          let res = await auth.signInAnonymously();
+          const uid = res.user.uid;
+          localUser = {uid,name,color};
+          // write user profile under couple (helpful for showing names)
+          await db.ref(`couples/${coupleId}/users/${uid}`).set({name,color,joined:Date.now()});
+          startApp();
+        }catch(e){alert('auth error '+e.message)}
+      };
+    }
+
+    function startApp(){
+      authArea.innerHTML = `<div style="text-align:right;font-size:13px">Signed in as <strong>${localUser.name}</strong></div>`;
+      app.style.display = 'block';
+      coupleCodeLbl.textContent = coupleId;
+      todayDisplay.textContent = (new Date()).toLocaleString('en-CA',{timeZone:'America/Toronto', weekday:'long', year:'numeric', month:'short', day:'numeric'});
+      renderListSkeleton();
+      attachDBListeners();
+      setupMessageButtons();
+      requestNotificationPermission();
+    }
+
+    function renderListSkeleton(){
+      // clear existing rows (each task will be a row with 3 cols)
+      // keep header already in place
+      // remove previous rows except header row (we use listGrid with first row header)
+      // remove all children after the first 3 header nodes
+      // Remove previous rows (preserve header row cells)
+      while(listGrid.children.length>3){listGrid.removeChild(listGrid.lastChild)}
+
+      TASKS.forEach((t, idx)=>{
+        const taskLabel = document.createElement('div');
+        taskLabel.className='task';
+        taskLabel.innerHTML = `<label>${t}</label>`;
+
+        const colA = document.createElement('div');
+        colA.style.textAlign='center';
+        colA.dataset.task = idx;
+        colA.dataset.user = 'A';
+        colA.innerHTML = `<div class="checkbox" id="cbA-${idx}"></div>`;
+
+        const colB = document.createElement('div');
+        colB.style.textAlign='center';
+        colB.dataset.task = idx;
+        colB.dataset.user = 'B';
+        colB.innerHTML = `<div class="checkbox" id="cbB-${idx}"></div>`;
+
+        listGrid.appendChild(taskLabel);
+        listGrid.appendChild(colA);
+        listGrid.appendChild(colB);
+
+        // click handlers later once we know mapping from users to columns
+      });
+    }
+
+    // attach listeners to DB
+    function attachDBListeners(){
+      const today = todayKey();
+      const refToday = db.ref(`couples/${coupleId}/days/${today}/checks`);
+
+      // listen for users meta to show names
+      db.ref(`couples/${coupleId}/users`).on('value', snap=>{
+        const users = snap.val()||{};
+        const uids = Object.keys(users);
+        // pick two to display; ensure localUser first
+        const others = uids.filter(u=>u!==localUser.uid);
+        const partnerUid = others[0]||uids[0]||null;
+        otherUserId = partnerUid;
+        const meProfile = users[localUser.uid] || {name:localUser.name,color:localUser.color};
+        const partnerProfile = partnerUid ? (users[partnerUid] || {name:'Partner',color:'pink'}) : {name:'Partner',color:'pink'};
+        userAName.textContent = meProfile.name;
+        userBName.textContent = partnerProfile.name;
+        // color headers
+        userAName.style.color = meProfile.color==='pink'? 'var(--pink)': 'var(--blue)';
+        userBName.style.color = partnerProfile.color==='pink'? 'var(--pink)': 'var(--blue)';
+      });
+
+      // listen for today's checks
+      refToday.on('value', snap=>{
+        const data = snap.val() || {};
+        // data structure: {uid:{taskIdx: timestamp}}
+        // get the two uids (local and partner if present)
+        // Map uids to columns A (local) and B (partner)
+        const uids = Object.keys(data);
+        // fill default unchecked
+        TASKS.forEach((t, idx)=>{
+          // cbA = localUser
+          const cbA = document.getElementById(`cbA-${idx}`);
+          const cbB = document.getElementById(`cbB-${idx}`);
+          if(!cbA || !cbB) return;
+          const localChecked = data[localUser.uid] && data[localUser.uid][idx];
+          const partnerChecked = otherUserId && data[otherUserId] && data[otherUserId][idx];
+          cbA.className = 'checkbox' + (localChecked? ' checked blue':'');
+          cbB.className = 'checkbox' + (partnerChecked? ' checked pink':'');
+
+          // attach click to toggle local marking
+          cbA.onclick = ()=>toggleTask(idx);
+          cbB.onclick = ()=>{
+            // viewers cannot toggle other person's box — toggles local
+            toggleTask(idx);
+          };
+        });
+      });
+
+      // listen for messages
+      db.ref(`couples/${coupleId}/messages`).limitToLast(10).on('child_added', snap=>{
+        const msg = snap.val();
+        if(!msg) return;
+        // show toast / notification if not from me
+        if(msg.senderUid !== localUser.uid){
+          showToast(`${msg.senderName}: ${msg.text}`);
+          try{new Notification(msg.senderName, {body: msg.text})}catch(e){}
+        }
+      });
+
+      // compute streaks (we'll check the past 365 days)
+      computeStreaks();
+    }
+
+    async function toggleTask(taskIdx){
+      const today = todayKey();
+      const refTask = db.ref(`couples/${coupleId}/days/${today}/checks/${localUser.uid}/${taskIdx}`);
+      const cur = (await refTask.get()).val();
+      if(cur){
+        await refTask.remove();
+      }else{
+        await refTask.set(Date.now());
+      }
+      // after toggling, recompute streak quickly
+      computeStreaks();
+    }
+
+    function setupMessageButtons(){
+      document.querySelectorAll('.msg-btn').forEach(b=>{
+        b.onclick = ()=>{
+          const text = b.dataset.msg;
+          sendMessage(text);
+        };
+      });
+    }
+
+    async function sendMessage(text){
+      const msgRef = db.ref(`couples/${coupleId}/messages`).push();
+      await msgRef.set({senderUid: localUser.uid, senderName: localUser.name, text, ts: Date.now()});
+    }
+
+    function showToast(text){
+      const t = document.createElement('div');
+      t.className='toast';
+      t.textContent = text;
+      document.body.appendChild(t);
+      setTimeout(()=>t.remove(),4000);
+    }
+
+    function requestNotificationPermission(){
+      if('Notification' in window && Notification.permission === 'default'){
+        Notification.requestPermission().then(()=>{});
+      }
+    }
+
+    // compute streaks for local user and partner (consecutive days where user had any check)
+    async function computeStreaks(){
+      const days = 365; // look back up to 1 year
+      const dateList = [];
+      const today = new Date();
+      // build array of date keys ending with todayKey()
+      for(let i=0;i<days;i++){
+        const d = new Date();
+        d.setDate(today.getDate()-i);
+        // format in Toronto
+        const parts = new Intl.DateTimeFormat('en-CA',{timeZone:'America/Toronto',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d);
+        const map = {};
+        parts.forEach(p=>map[p.type]=p.value);
+        dateList.push(`${map.year}-${map.month}-${map.day}`);
+      }
+
+      // helper to check if a user has any check on a date
+      async function hasAnyCheckOn(uid, dateKey){
+        const snap = await db.ref(`couples/${coupleId}/days/${dateKey}/checks/${uid}`).get();
+        return snap.exists();
+      }
+
+      // compute local streak
+      let streakCountA = 0;
+      for(const d of dateList){
+        const ok = await hasAnyCheckOn(localUser.uid,d);
+        if(ok) streakCountA++; else break;
+      }
+      streakA.textContent = `${streakCountA} day${streakCountA===1?'':'s'} straight`;
+
+      // partner
+      if(otherUserId){
+        let streakCountB = 0;
+        for(const d of dateList){
+          const ok = await hasAnyCheckOn(otherUserId,d);
+          if(ok) streakCountB++; else break;
+        }
+        streakB.textContent = `${streakCountB} day${streakCountB===1?'':'s'} straight`;
+      }else{
+        streakB.textContent = `—`;
+      }
+    }
+
+    // start
+    auth.onAuthStateChanged(user=>{
+      if(user && !localUser){
+        showSignIn();
+      }else if(!user){
+        showSignIn();
+      }
+    });
+
+    // First time: show sign in; user will authenticate anonymously then set name and code
+    showSignIn();
+
+  </script>
+</body>
+</html>
