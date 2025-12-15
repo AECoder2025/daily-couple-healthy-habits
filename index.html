@@ -138,31 +138,94 @@
     let coupleId = null;
     let otherUserId = null; // uid of partner (best-effort)
 
+    // helper to read `code` param from URL
+    function getCodeFromUrl() {
+      try {
+        const url = new URL(window.location.href);
+        return url.searchParams.get('code') || '';
+      } catch(e) { return ''; }
+    }
+
+    // generate short 6-char alphanumeric code and ensure uniqueness by checking DB
+    async function generateUniqueCode() {
+      const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      const makeCode = () => {
+        let s = '';
+        for(let i=0;i<6;i++) s += chars[Math.floor(Math.random()*chars.length)];
+        return s;
+      };
+
+      for(let attempt=0; attempt<8; attempt++){
+        const candidate = makeCode();
+        const snap = await db.ref(`couples/${candidate}/meta`).get();
+        if(!snap.exists()){
+          return candidate;
+        }
+      }
+      // fallback to push key if unlucky
+      const newRef = db.ref('couples').push();
+      return newRef.key;
+    }
+
     function showSignIn() {
       authArea.innerHTML = '';
       const container = document.createElement('div');
       container.className = 'signin';
+
+      // try auto-fill couple code from URL query param
+      const prefill = getCodeFromUrl();
+
       container.innerHTML = `
         <input id="inpName" placeholder="Your name" />
-        <input id="inpCouple" placeholder="Couple code (both use same)" />
+        <input id="inpCouple" placeholder="Couple code (leave blank to create)" value="${prefill}" />
         <select id="inpColor"><option value="blue">Blue</option><option value="pink">Pink</option></select>
-        <button id="btnJoin" class="btn">Join</button>
+        <button id="btnJoin" class="btn">Join / Create</button>
+        <div id="inviteArea" style="font-size:12px;margin-left:8px;color:var(--muted)"></div>
       `;
       authArea.appendChild(container);
-      document.getElementById('btnJoin').onclick = async ()=>{
+
+      document.getElementById('btnJoin').onclick = async ()=> {
         const name = document.getElementById('inpName').value.trim();
-        const code = document.getElementById('inpCouple').value.trim();
+        let code = document.getElementById('inpCouple').value.trim();
         const color = document.getElementById('inpColor').value;
-        if(!name||!code){alert('Enter name and couple code');return}
-        coupleId = code;
-        try{
+        const inviteArea = document.getElementById('inviteArea');
+
+        if(!name){ alert('Enter name'); return; }
+
+        try {
+          // sign in anonymously first so we have uid to write meta if we create couple
           let res = await auth.signInAnonymously();
           const uid = res.user.uid;
-          localUser = {uid,name,color};
-          // write user profile under couple (helpful for showing names)
-          await db.ref(`couples/${coupleId}/users/${uid}`).set({name,color,joined:Date.now()});
+          localUser = {uid, name, color};
+
+          // if no code provided, generate one and reserve it
+          if(!code){
+            inviteArea.textContent = 'Generating couple code...';
+            code = await generateUniqueCode();
+
+            // create minimal meta so others can see it's reserved
+            await db.ref(`couples/${code}/meta`).set({
+              createdBy: uid,
+              createdAt: Date.now()
+            });
+
+            // create invite URL and copy to clipboard
+            const inviteUrl = `${location.origin}${location.pathname}?code=${code}`;
+            try { await navigator.clipboard.writeText(inviteUrl); inviteArea.textContent = `Invite link copied to clipboard: ${inviteUrl}`; }
+            catch(e) { inviteArea.textContent = `Invite link: ${inviteUrl}`; }
+          }
+
+          // now set coupleId and write user profile
+          coupleId = code;
+          await db.ref(`couples/${coupleId}/users/${uid}`).set({name, color, joined: Date.now()});
+
+          // update URL to include code (so refresh keeps it)
+          history.replaceState(null, '', `?code=${coupleId}`);
+
           startApp();
-        }catch(e){alert('auth error '+e.message)}
+        } catch(e) {
+          alert('auth error: ' + (e.message || e));
+        }
       };
     }
 
